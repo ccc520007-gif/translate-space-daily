@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Translate Space 自动日报</title>
+<style>
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f3f5f7;color:#263447;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}
+.box{max-width:540px;background:#fff;border:1px solid #e4e9ef;border-radius:12px;padding:28px 30px;box-shadow:0 2px 8px #12243a08;text-align:center}
+h1{font-size:18px;margin:0 0 12px}
+p{font-size:13px;color:#748194;line-height:1.8;margin:8px 0}
+code{background:#f7f9fb;border:1px solid #e9edf2;border-radius:6px;padding:2px 6px;font-size:12px}
+</style></head>
+<body><div class="box"><h1>Translate Space 自动日报</h1><p id="msg">正在打开…</p></div>
+<script>
+(function(){
+  var msg = document.getElementById('msg');
+  function fail(text){ msg.innerHTML = text; }
+  function b64urlToBytes(s){
+    s = s.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    var bin = atob(s), out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  function b64ToBytes(s){
+    var bin = atob(s), out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  async function main(){
+    var params = new URLSearchParams(location.hash.slice(1));
+    var k = params.get('k');
+    if (!k) {
+      fail('这个链接缺少访问密钥。<br>请向报表负责人索取<b>完整链接</b>（末尾带 <code>#k=…</code> 的那一段）。');
+      return;
+    }
+    var keyBytes;
+    try { keyBytes = b64urlToBytes(k); } catch (e) { fail('访问密钥格式不对。'); return; }
+    if (keyBytes.length !== 32) { fail('访问密钥无效。'); return; }
+
+    var resp;
+    try { resp = await fetch('data.bin', {cache: 'no-store'}); }
+    catch (e) { fail('数据加载失败，请检查网络后重试。'); return; }
+    if (!resp.ok) { fail('数据加载失败（HTTP ' + resp.status + '）。'); return; }
+
+    var raw;
+    try { raw = b64ToBytes(new TextDecoder().decode(await resp.arrayBuffer()).trim()); }
+    catch (e) { fail('数据格式不对。'); return; }
+    var iv = raw.slice(0, 16), ct = raw.slice(16);
+
+    var plain;
+    try {
+      var aesKey = await crypto.subtle.importKey('raw', keyBytes, {name: 'AES-CBC'}, false, ['decrypt']);
+      var buf = await crypto.subtle.decrypt({name: 'AES-CBC', iv: iv}, aesKey, ct);
+      plain = new TextDecoder().decode(buf);
+    } catch (e) {
+      fail('解密失败：链接可能被截断，或报表已换过密钥。<br>请重新索取最新链接。');
+      return;
+    }
+
+    var payload;
+    try { payload = JSON.parse(plain); } catch (e) { fail('数据解析失败。'); return; }
+
+    var patch = "document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a'):null;if(!a)return;var h=a.getAttribute('href')||'';if(!/\\.csv$/i.test(h))return;var n=h.split('/').pop();var c=(window.__CSVS||{})[n];if(c==null)return;e.preventDefault();var b=new Blob([c],{type:'text/csv;charset=utf-8'});var u=URL.createObjectURL(b);var t=document.createElement('a');t.href=u;t.download=n;t.click();setTimeout(function(){URL.revokeObjectURL(u);},5000);},true);";
+    var inject = '<script>window.__CSVS=' + JSON.stringify(payload.csv || {}).replace(/</g, '\\u003c') + ';' + patch + '<\/script>';
+    var html = payload.html || '';
+    html = html.indexOf('</body>') >= 0 ? html.replace('</body>', inject + '</body>') : html + inject;
+
+    document.open();
+    document.write(html);
+    document.close();
+  }
+  main();
+})();
+</script></body></html>
